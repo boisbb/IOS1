@@ -1,0 +1,180 @@
+#!/bin/sh
+
+##  autor: Boris Burkalo, 1BIT
+## Fakulta Informačních Technologií, VUT Brno
+## 28.3.2019
+## IOS - Úloha 1 (Filtrace logů)
+
+
+POSIXLY_CORRECT=yes
+i=1
+stdin_check=1
+file_check=0
+hist_check=1
+hist_load_check=1
+cmd_date="date"
+u_name="$( uname )"
+cmd_count=0
+fil_count=0
+fil_check=0
+
+### CHECK IF THERE IS LESS OR ONE CMD ####
+fail_check()
+{
+  l_ip="$( echo "$1" | tr " " "\n" | grep -c "list-ip")"
+  l_hosts="$( echo "$1" | tr " " "\n" | grep -c "list-hosts")"
+  l_uri="$( echo "$1" | tr " " "\n" | grep -c "list-uri")"
+  h_ip="$( echo "$1" | tr " " "\n" | grep -c "hist-ip")"
+  h_lo="$( echo "$1" | tr " " "\n" | grep -c "hist-load")"
+  total=$((l_ip + l_hosts + l_uri + h_ip + h_lo))
+  if [ "$total" -gt 1 ]; then
+    >&2 echo "ERROR: too many commands in argument."
+    exit 1
+  fi
+}
+
+filter_check()
+{
+  for arg in "$@"; do
+    if [ "$arg" = "list-ip" ] || [ "$arg" = "list-hosts" ] || [ "$arg" = "list-uri" ] || [ "$arg" = "hist-ip" ] || [ "$arg" = "hist-load" ]; then
+      cmd_count=$((cmd_count + 1))
+      fil_check="$fil_count"
+    elif [ "$arg" = "-a" ] || [ "$arg" = "-b" ] || [ "$arg" = "-ip" ] || [ "$arg" = "-uri" ] ; then
+      fil_count=$((fil_count + 1))
+    fi
+  done
+
+  if [ "$fil_check" -lt "$fil_count" ] && [ "$cmd_count" -gt 0 ]; then
+    >&2 echo "ERROR: wrong command/filter order."
+    exit 1
+  fi
+}
+
+### CHECK FOR SYSTEM, IF NOT LINUX OR MACOS USE GDATE
+if [ "$u_name" != "Linux" ] && [ "$u_name" != "Darwin" ]; then
+  cmd_date="gdate"
+fi
+
+fail_check "$*"
+filter_check "$@"
+
+### CHECK FOR FILES #####
+for x in "$@" ; do
+  if [ -f "$x" ]; then
+    file_var_temp=$( zcat -f "$x" )
+    if [ "$file_check" -gt 0 ]; then
+      file_var="$( printf "%s\n%s" "$file_var" "$file_var_temp" )"
+    else
+      file_var="$file_var_temp"
+    fi
+    file_check=$((file_check + 1))
+  fi
+
+  if [ "$file_check" -ge 1 ] && [ ! -f "$x" ]; then
+    >&2 echo "ERROR: Incorrect argument format."
+    exit 1
+  fi
+  if [ "$stdin_check" = "$#" ] && [ "$file_check" = 0 ]; then
+    file_var="$( cat )"
+  fi
+  stdin_check=$((stdin_check + 1))
+done
+
+
+x="$( echo "$@" | wc -w )"
+while [ "$i" -le "$x" ]; do
+    arguments="$*"
+    a=$( echo "$arguments" | awk '{print $arg}' arg="$i" )
+
+    ### LIST-IP ####
+    if [ "$a" = "list-ip" ]; then
+      file_var=$( echo "$file_var" | awk '{print $1}' | tr " " "\n" | sort | uniq )
+
+    ### LIST-HOSTS ####
+    elif [ "$a" = "list-hosts" ]; then
+      file_var=$( echo "$file_var" | awk '{print $1}' |tr " " "\n" | sort | uniq )
+      echo "$file_var" | while read -r line; do
+        domain=$( host "$line" )
+        domain_name=$( echo "$domain" | cut -d " " -f5 )
+        if [ "$domain_name" = "3(NXDOMAIN)" ] || [ "$domain_name" = "2(SERVFAIL)" ]; then
+          echo "$line"
+        elif [ "$domain_name" != "3(NXDOMAIN)" ]; then
+          echo "$domain_name"
+        fi
+      done
+      exit 0
+
+    ### LIST-URI ####
+    elif [ "$a" = "list-uri" ]; then
+      file_var=$( echo "$file_var" | cut -d \" -f2 | cut -d " " -f2 | grep -v "-" | sort | uniq )
+
+    ### HIST-IP #### -creates histogram based on IP address occurence
+    elif [ "$a" = "hist-ip" ]; then
+      file_var="$( echo "$file_var" | awk '{ print $1 }' | sort | uniq -c | sort -nr)"
+      echo "$file_var" | while read -r line; do
+        hist_graph="#"
+        count="$( echo "$line" | awk '{ print $1 }')"
+        ip_data="$( echo "$line" | awk '{ print $2 }')"
+        while [ "$hist_check" -lt "$count" ]; do
+          hist_graph="$hist_graph#"
+          hist_check=$((hist_check + 1))
+        done
+        hist_line="$ip_data ($count): $hist_graph"
+        echo "$hist_line"
+        hist_check=1
+      done
+      exit 0
+
+    ### HIST-LOAD ####
+    elif [ "$a" = "hist-load" ]; then
+      file_var=$( echo "$file_var" | awk '{ print $4 }'| tr -d "[" | sort | cut -c-14 | uniq -c )
+      echo "$file_var" | while read -r line; do
+        hist_load_graph="#"
+        count_load="$( echo "$line" | awk '{ print $1 }' )"
+        date_load="$( echo "$line" | awk '{ print $2 }' | cut -d ":" -f1 | tr "/" "-")"
+        date_load="$( LC_ALL=C $cmd_date -d "$date_load" +%Y-%m-%d )"
+        time_load="$( echo "$line" | awk '{ print $2 }' | cut -d ":" -f2 )"
+        while [ "$hist_load_check" -lt "$count_load" ]; do
+          hist_load_graph="$hist_load_graph#"
+          hist_load_check=$(( hist_load_check + 1 ))
+        done
+        date_hist="$date_load $time_load:00 ($count_load): $hist_load_graph"
+        hist_load_check=1
+        echo "$date_hist"
+      done
+      exit 0
+
+    ### DATE #### - sorts logs based on date | -b data bellow given date | -a data above given date
+    elif [ "$a" = "-a" ] || [ "$a" = "-b"  ]; then
+      d="$(( i + 1 ))"
+      t="$(( i + 2 ))"
+      input_year=$( echo "$arguments" | awk '{print $arg}' arg="$d" | tr -d \")
+      input_time=$( echo "$arguments" | awk '{print $arg}' arg="$t" | tr -d \")
+      input_date=$( LC_ALL=C $cmd_date -d"$input_year $input_time" +[%d/%b/%Y:%H:%M:%S )
+      if [ "$a" = "-a" ]; then
+        file_var="$( echo "$file_var" | awk -vDate="$input_date" '$4 > Date { print $0 }' )"
+      elif [ "$a" = "-b" ]; then
+        file_var="$( echo "$file_var" | awk -vDate="$input_date" '$4 < Date { print $0 }' )"
+      fi
+      i=$(( i + 1 ))
+
+    ### IP FILTER #### -filtering based on ip address passed on via argument
+    elif [ "$a" = "-ip" ]; then
+      ip="$(( i + 1 ))"
+      input_ip=$( echo "$arguments" | awk '{ print $col }' col=$ip )
+      file_var=$( echo "$file_var" | grep "$input_ip")
+
+    ### URI FILTER ####
+    elif [ "$a" = "-uri" ]; then
+      u="$(( i + 1 ))"
+      input_uri="$( echo "$arguments" | awk '{ print $uricol }' uricol=$u )"
+      file_var=$( echo "$file_var" | grep "$input_uri")
+    fi
+
+
+    ### IF $i gets to the last argument
+    if [ "$i" -eq "$x" ]; then
+      echo "$file_var"
+    fi
+  i=$((i + 1))
+done
